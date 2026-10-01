@@ -1,0 +1,28 @@
+{
+  "name": "pushr-backend",
+  "version": "0.1.0",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "bunx convex dev",
+    "push": "bunx convex dev --once",
+    "deploy": "bunx convex deploy",
+    "tsc": "bunx tsc --noEmit",
+    "seed": "bunx convex run seed:createAdmin"
+  },
+  "dependencies": {
+    "@convex-dev/better-auth": "^0.12.5",
+    "@convex-dev/workpool": "^0.4.10",
+    "better-auth": "1.6.11",
+    "convex": "^1.45.0",
+    "convex-helpers": "^0.1.123",
+    "fast-png": "^8.0.0",
+    "jpeg-js": "^0.4.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "@types/node": "^25.9.5",
+    "typescript": "^6.0.3"
+  }
+}
