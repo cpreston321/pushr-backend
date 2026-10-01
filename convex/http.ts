@@ -1,6 +1,7 @@
 import { httpRouter } from 'convex/server';
 import { unsafeCallbackReason } from './lib/safeUrl';
 import { SELF_HOSTED } from './lib/deployment';
+import { appleSignInEnabled } from './lib/features';
 import { httpAction, type ActionCtx } from './_generated/server';
 import { internal } from './_generated/api';
 import { authComponent, createAuth } from './betterAuth/auth';
@@ -507,12 +508,14 @@ http.route({
 });
 
 
-// Health check, also read by the app's Server screen: `selfHosted` tells it to
-// ask for a connection code.
+// Health check, also read by the app: `selfHosted` makes the Server screen ask
+// for a connection code, and `appleSignIn` decides whether the Apple button shows.
 http.route({
   path: '/healthz',
   method: 'GET',
-  handler: httpAction(async () => json({ ok: true, selfHosted: SELF_HOSTED }, 200))
+  handler: httpAction(async () =>
+    json({ ok: true, selfHosted: SELF_HOSTED, appleSignIn: appleSignInEnabled() }, 200)
+  )
 });
 
 /** Self-hosted only: trade a connection code for a one-account sign-up grant. */

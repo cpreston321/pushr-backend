@@ -109,9 +109,12 @@ changes deploy with the functions; there's no separate migration step.
   Your server only needs outbound HTTPS.
 - **Plans don't apply.** Pro features are on for every account on your
   deployment.
-- **Sign in with Apple works,** but deleting an account can't revoke the Apple
-  sign-in (that needs the publisher's key), and Hide My Email addresses only
-  get email if your sending domain is registered with Apple.
+- **Sign in with Apple is off** unless you set `APPLE_SIGN_IN=enabled`. Apple
+  gives every server for the pushr app the same identifier for a person, so
+  signing in to your server would link their Apple ID to their pushr cloud
+  account. Deletion also can't revoke the Apple sign-in (that needs the
+  publisher's key), and Hide My Email addresses only get email if your sending
+  domain is registered with Apple.
 
 ---
 

@@ -10,6 +10,7 @@ import authConfig from '../auth.config';
 import schema from './schema';
 import { resetPasswordEmail, verifyEmailEmail, welcomeEmail, type Email } from '../lib/email';
 import { SELF_HOSTED } from '../lib/deployment';
+import { appleSignInEnabled } from '../lib/features';
 
 export const authComponent = createClient<DataModel, typeof schema>(components.betterAuth, {
   local: { schema },
@@ -58,16 +59,20 @@ export const createAuthOptions = (ctx: GenericCtx<DataModel>) => ({
       );
     }
   },
-  socialProviders: {
-    apple: {
-      // The app signs in natively and sends Apple's ID token, which is checked
-      // against the bundle id; the client secret is only used by the web
-      // redirect flow.
-      clientId: process.env.APPLE_CLIENT_ID ?? 'dev.cpreston.pushr',
-      clientSecret: process.env.APPLE_CLIENT_SECRET ?? '',
-      appBundleIdentifier: process.env.APPLE_BUNDLE_ID ?? 'dev.cpreston.pushr'
-    }
-  },
+  // Only registered where Sign in with Apple is on (lib/features.ts), so a
+  // self-hosted server refuses Apple sign-ins rather than just hiding the button.
+  socialProviders: appleSignInEnabled()
+    ? {
+        apple: {
+          // The app signs in natively and sends Apple's ID token, which is checked
+          // against the bundle id; the client secret is only used by the web
+          // redirect flow.
+          clientId: process.env.APPLE_CLIENT_ID ?? 'dev.cpreston.pushr',
+          clientSecret: process.env.APPLE_CLIENT_SECRET ?? '',
+          appBundleIdentifier: process.env.APPLE_BUNDLE_ID ?? 'dev.cpreston.pushr'
+        }
+      }
+    : {},
   hooks: {
     before: createAuthMiddleware(async (endpoint) => {
       if (endpoint.path !== '/sign-in/social' && endpoint.path !== '/link-social') return;
