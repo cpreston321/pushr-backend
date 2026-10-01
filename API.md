@@ -82,6 +82,17 @@ window passes.
 
 To go back, return to the same screen and tap **Use pushr cloud**.
 
+#### If you change `BETTER_AUTH_SECRET`
+
+The key that signs the app's Convex tokens is stored encrypted with the
+secret. After changing it, sign-in still works but the app can't load
+anything, and the logs show `Failed to decrypt private key`. Generate a new
+key with:
+
+```bash
+bunx convex run maintenance:resetAuthKeys
+```
+
 ### 5. Send a push
 
 Create a source app in the **Apps** tab and copy its token, then:
