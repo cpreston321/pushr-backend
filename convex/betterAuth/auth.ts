@@ -2,12 +2,13 @@ import { createClient } from '@convex-dev/better-auth';
 import { convex } from '@convex-dev/better-auth/plugins';
 import type { GenericCtx } from '@convex-dev/better-auth/utils';
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
-import { APIError } from 'better-auth/api';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
+import { nonceIsForServer } from '../lib/appleNonce';
 import { components, internal } from '../_generated/api';
 import type { DataModel } from '../_generated/dataModel';
 import authConfig from '../auth.config';
 import schema from './schema';
-import { resetPasswordEmail, sendEmail, verifyEmailEmail } from '../lib/email';
+import { resetPasswordEmail, verifyEmailEmail, welcomeEmail, type Email } from '../lib/email';
 import { SELF_HOSTED } from '../lib/deployment';
 
 export const authComponent = createClient<DataModel, typeof schema>(components.betterAuth, {
@@ -41,14 +42,20 @@ export const createAuthOptions = (ctx: GenericCtx<DataModel>) => ({
     requireEmailVerification: false,
     resetPasswordTokenExpiresIn: 60 * 60,
     sendResetPassword: async ({ user, url }) => {
-      if (await mayEmail(ctx, user.email)) await sendEmail(resetPasswordEmail(user.email, url));
+      await queueEmail(ctx, resetPasswordEmail(user.email, url));
     }
   },
   emailVerification: {
     sendOnSignUp: true,
     autoSignInAfterVerification: true,
-    sendVerificationEmail: async ({ user, url }) => {
-      if (await mayEmail(ctx, user.email)) await sendEmail(verifyEmailEmail(user.email, url));
+    // At sign-up this is the welcome email, confirm button included, so a new
+    // account gets one email rather than two. "Resend" taps get the short one.
+    sendVerificationEmail: async ({ user, url }, request) => {
+      const signingUp = !request || new URL(request.url).pathname.includes('/sign-up/');
+      await queueEmail(
+        ctx,
+        signingUp ? welcomeEmail(user.email, { name: user.name, confirmUrl: url }) : verifyEmailEmail(user.email, url)
+      );
     }
   },
   socialProviders: {
@@ -61,6 +68,20 @@ export const createAuthOptions = (ctx: GenericCtx<DataModel>) => ({
       appBundleIdentifier: process.env.APPLE_BUNDLE_ID ?? 'dev.cpreston.pushr'
     }
   },
+  hooks: {
+    before: createAuthMiddleware(async (endpoint) => {
+      if (endpoint.path !== '/sign-in/social' && endpoint.path !== '/link-social') return;
+      const body = endpoint.body as { provider?: string; idToken?: { nonce?: string } } | undefined;
+      if (body?.provider !== 'apple' || !body.idToken) return;
+      // See lib/appleNonce.ts: an Apple token is only accepted by the server it was made for.
+      if (!nonceIsForServer(body.idToken.nonce, [process.env.SITE_URL, process.env.CONVEX_SITE_URL])) {
+        throw new APIError('UNAUTHORIZED', {
+          code: 'APPLE_NONCE_MISMATCH',
+          message: 'That Apple sign-in was meant for a different server. Please try again.'
+        });
+      }
+    })
+  },
   account: {
     accountLinking: {
       enabled: true,
@@ -72,6 +93,11 @@ export const createAuthOptions = (ctx: GenericCtx<DataModel>) => ({
   databaseHooks: {
     user: {
       create: {
+        // Sign in with Apple accounts arrive verified, so no verification
+        // email goes out; welcome them here instead.
+        after: async (user) => {
+          if (user.emailVerified) await queueEmail(ctx, welcomeEmail(user.email, { name: user.name }));
+        },
         before: async (_user, endpoint) => {
           // Self-hosted servers only take accounts their owner let in: sign-ups
           // from the app carry a grant from a connection code (see pairing.ts).
@@ -115,12 +141,17 @@ export const createAuthOptions = (ctx: GenericCtx<DataModel>) => ({
   plugins: [convex({ authConfig })]
 }) satisfies BetterAuthOptions;
 
-/** Over the limit, the email is dropped silently, so the response doesn't reveal it. */
-async function mayEmail(ctx: GenericCtx<DataModel>, email: string): Promise<boolean> {
-  if (!('runMutation' in ctx)) return true;
-  const allowed = await ctx.runMutation(internal.emailThrottle.take, { email });
-  if (!allowed) console.warn('[email] throttled an account email');
-  return allowed;
+/**
+ * Throttled, then handed to the scheduler (see emails.ts). Over the limit the
+ * email is dropped silently, so the response doesn't reveal it.
+ */
+async function queueEmail(ctx: GenericCtx<DataModel>, email: Email): Promise<void> {
+  if (!('runMutation' in ctx) || !('scheduler' in ctx)) return;
+  if (!(await ctx.runMutation(internal.emailThrottle.take, { email: email.to }))) {
+    console.warn('[email] throttled an account email');
+    return;
+  }
+  await ctx.scheduler.runAfter(0, internal.emails.send, email);
 }
 
 export const createAuth = (ctx: GenericCtx<DataModel>) => {
