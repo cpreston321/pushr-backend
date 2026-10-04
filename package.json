@@ -1,0 +1,37 @@
+{
+  "name": "pushr-backend",
+  "version": "1.0.0",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "bunx convex dev",
+    "push": "bunx convex dev --once",
+    "deploy": "bunx convex deploy",
+    "tsc": "bunx tsc --noEmit",
+    "seed": "bunx convex run seed:createAdmin",
+    "emails": "email dev -d convex/mail -p 3001"
+  },
+  "dependencies": {
+    "@convex-dev/better-auth": "^0.12.5",
+    "@convex-dev/workpool": "^0.4.10",
+    "@react-email/components": "^1.0.12",
+    "@react-email/render": "^2.1.0",
+    "better-auth": "1.6.11",
+    "convex": "^1.45.0",
+    "convex-helpers": "^0.1.123",
+    "fast-png": "^8.0.0",
+    "jpeg-js": "^0.4.4",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@react-email/preview-server": "5.2.10",
+    "@react-email/ui": "6.11.0",
+    "@types/bun": "^1.4.0",
+    "@types/node": "^25.9.5",
+    "@types/react": "^19.2.18",
+    "react-email": "6.11.0",
+    "typescript": "^6.0.3"
+  }
+}
