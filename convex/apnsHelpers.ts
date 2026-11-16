@@ -3,6 +3,11 @@ import { internalMutation, internalQuery } from './_generated/server';
 import type { Id } from './_generated/dataModel';
 import { pushRecipients } from './lib/sharing';
 
+/** The step's sends to Android devices (`expoPush.deliverLiveUpdate`), added to the APNs counts. */
+const androidTally = v.optional(
+  v.object({ attempted: v.number(), success: v.number(), failures: v.array(v.string()) })
+);
+
 /**
  * Helper queries + mutations for the APNs Live Activity client
  * (see convex/apns.ts). Kept in a separate file because actions
@@ -145,19 +150,21 @@ export const recordStartResults = internalMutation({
         reason: v.optional(v.string()),
         apnsId: v.optional(v.string())
       })
-    )
+    ),
+    android: androidTally
   },
   handler: async (ctx, args) => {
     const successCount = args.results.filter((r) => r.ok).length;
-    const failures = args.results
-      .filter((r) => !r.ok)
-      .map((r) => `${r.status}${r.reason ? ` ${r.reason}` : ''}`);
+    const failures = [
+      ...args.results.filter((r) => !r.ok).map((r) => `${r.status}${r.reason ? ` ${r.reason}` : ''}`),
+      ...(args.android?.failures ?? [])
+    ];
     // Append onto the notification row so the feed surfaces delivery status.
     const notif = await ctx.db.get(args.notificationId);
     if (notif) {
       await ctx.db.patch(args.notificationId, {
-        attemptedDeviceCount: args.results.length,
-        successDeviceCount: successCount,
+        attemptedDeviceCount: args.results.length + (args.android?.attempted ?? 0),
+        successDeviceCount: successCount + (args.android?.success ?? 0),
         failureMessages: failures.length > 0 ? failures : undefined
       });
     }
@@ -176,7 +183,8 @@ export const recordUpdateResult = internalMutation({
     ok: v.boolean(),
     status: v.number(),
     reason: v.optional(v.string()),
-    apnsId: v.optional(v.string())
+    apnsId: v.optional(v.string()),
+    android: androidTally
   },
   handler: async (ctx, args) => {
     if (!args.ok && args.deadToken && (args.status === 410 || DEAD_TOKEN_REASONS.has(args.reason ?? ''))) {
@@ -192,12 +200,14 @@ export const recordUpdateResult = internalMutation({
     }
     const notif = await ctx.db.get(args.notificationId);
     if (!notif) return;
+    const failures = [
+      ...(args.ok ? [] : [`APNs ${args.status}${args.reason ? `: ${args.reason}` : ''}`]),
+      ...(args.android?.failures ?? [])
+    ];
     await ctx.db.patch(args.notificationId, {
-      attemptedDeviceCount: 1,
-      successDeviceCount: args.ok ? 1 : 0,
-      failureMessages: args.ok
-        ? undefined
-        : [`APNs ${args.status}${args.reason ? `: ${args.reason}` : ''}`]
+      attemptedDeviceCount: 1 + (args.android?.attempted ?? 0),
+      successDeviceCount: (args.ok ? 1 : 0) + (args.android?.success ?? 0),
+      failureMessages: failures.length > 0 ? failures : undefined
     });
   }
 });

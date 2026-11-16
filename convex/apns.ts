@@ -268,7 +268,8 @@ function buildUpdatePayload(opts: {
  *
  * Invoked by notifyInternal.ingest when a `/notify` payload carries
  * `liveActivity`. Loads the necessary tokens from the DB, posts to APNs,
- * and records the outcome on the `liveActivities` shadow row.
+ * and records the outcome on the `liveActivities` shadow row. Android
+ * devices get the same step through Expo (`expoPush.deliverLiveUpdate`).
  */
 export const dispatch = internalAction({
   args: {
@@ -278,8 +279,34 @@ export const dispatch = internalAction({
     // Runs when the step is due, so a scheduled start, update or end moves
     // the row then, not when it was queued.
     await ctx.runMutation(internal.notifyInternal.shadowLiveActivity, { notificationId });
+    // Android has no Live Activities: its devices get every step as a
+    // data-only push and show it as an ongoing notification. Independent of
+    // APNs, so it runs first and whether or not APNs is set up.
+    const android = await ctx
+      .runAction(internal.expoPush.deliverLiveUpdate, { notificationId })
+      .catch((err: unknown) => {
+        console.warn(`[apns] android live update failed: ${err instanceof Error ? err.message : String(err)}`);
+        return { attempted: 0, success: 0, failures: [] as string[] };
+      });
+    // Folded into the counts the iOS path records, so they cover both.
+    const androidTally = android.attempted > 0 ? android : undefined;
     // The ordinary banner, for when the activity can't be shown instead.
-    const sendBanner = () => ctx.scheduler.runAfter(0, internal.expoPush.deliver, { notificationId });
+    // Android devices already have the step, so it's for iOS only.
+    const sendBanner = () =>
+      ctx.scheduler.runAfter(0, internal.expoPush.deliver, {
+        notificationId,
+        ...(androidTally ? { skipAndroid: true } : {})
+      });
+    // When the iOS path records nothing, the Android sends still count.
+    const recordAndroidOnly = async () => {
+      if (!androidTally) return;
+      await ctx.runMutation(internal.notifications.recordDelivery, {
+        id: notificationId,
+        attemptedDeviceCount: androidTally.attempted,
+        successDeviceCount: androidTally.success,
+        failureMessages: androidTally.failures.length > 0 ? androidTally.failures : undefined
+      });
+    };
     if (!process.env.APNS_AUTH_KEY) {
       console.warn('[apns] skipping — APNS_AUTH_KEY not configured; sending a banner instead');
       await sendBanner();
@@ -302,7 +329,7 @@ export const dispatch = internalAction({
       id: notificationId
     });
     const la = ctxData.liveActivity;
-    if (!la) return;
+    if (!la) return await recordAndroidOnly();
 
     if (la.action === 'start') {
       const tokens: Array<{ deviceId: string; pushToStartToken: string; environment?: ApnsEnvironment }> = await ctx.runQuery(
@@ -352,7 +379,8 @@ export const dispatch = internalAction({
           status: r.status,
           reason: r.reason,
           apnsId: r.apnsId
-        }))
+        })),
+        android: androidTally
       });
       if (!results.some((r) => r.ok)) await sendBanner();
       return;
@@ -374,13 +402,13 @@ export const dispatch = internalAction({
       console.warn(
         `[apns] ${la.action} ${la.activityId} — no liveActivities row (start push lost? device never confirmed?)`
       );
-      return;
+      return await recordAndroidOnly();
     }
     if (!activity.pushUpdateToken) {
       console.warn(
         `[apns] ${la.action} ${la.activityId} — row exists but no pushUpdateToken yet (device hasn't reported one; is enablePushUpdates running and activityUpdates wired?)`
       );
-      return;
+      return await recordAndroidOnly();
     }
     const payload = buildUpdatePayload({
       state: la.state,
@@ -410,7 +438,8 @@ export const dispatch = internalAction({
       ok: result.ok,
       status: result.status,
       reason: result.reason,
-      apnsId: result.apnsId
+      apnsId: result.apnsId,
+      android: androidTally
     });
   }
 });

@@ -1,7 +1,7 @@
 import { v } from 'convex/values';
 import { internalQuery, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
-import { listAccessibleSourceApps, pushRecipients } from './lib/sharing';
+import { listAccessibleSourceApps, memberCanAct, pushRecipients } from './lib/sharing';
 import { soundFor } from './userPrefs';
 import { countUnreadEntries } from './lib/unread';
 
@@ -111,7 +111,7 @@ export const activeDevicesForSourceApp = internalQuery({
   }
 });
 
-type PushDevice = { _id: Id<'devices'>; expoPushToken: string; ownerId: string };
+type PushDevice = { _id: Id<'devices'>; expoPushToken: string; ownerId: string; platform: Doc<'devices'>['platform'] };
 
 async function devicesForApp(ctx: QueryCtx, app: Doc<'sourceApps'>, onlyUserIds: string[] | undefined): Promise<PushDevice[]> {
   const recipients = await pushRecipients(ctx, app);
@@ -125,7 +125,7 @@ async function devicesForApp(ctx: QueryCtx, app: Doc<'sourceApps'>, onlyUserIds:
       .collect();
     for (const d of rows) {
       if (!d.enabled || d.invalidatedAt) continue;
-      out.push({ _id: d._id, expoPushToken: d.expoPushToken, ownerId: d.ownerId });
+      out.push({ _id: d._id, expoPushToken: d.expoPushToken, ownerId: d.ownerId, platform: d.platform });
     }
   }
   return out;
@@ -147,11 +147,54 @@ export const deliveryContext = internalQuery({
     const devices = app ? await devicesForApp(ctx, app, esc ? esc.order.slice(0, esc.level + 1) : undefined) : [];
     if (devices.length === 0) return { kind: 'none' as const, notif };
     const owners = [...new Set(devices.map((d) => d.ownerId))];
+    const members = app
+      ? await ctx.db
+          .query('sourceAppMembers')
+          .withIndex('by_app', (q) => q.eq('sourceAppId', app._id))
+          .collect()
+      : [];
+    const cantAct = members.filter((m) => owners.includes(m.userId) && !memberCanAct(m)).map((m) => m.userId);
     const [appInfo, { sound }, badges] = await Promise.all([
       app ? sourceAppInfo(ctx, app) : null,
       soundFor(ctx, notif.ownerId, notif.priority),
       Promise.all(owners.map(async (o) => [o, await unreadCount(ctx, o)] as const))
     ]);
-    return { kind: 'send' as const, notif, devices, appInfo, sound, badges: Object.fromEntries(badges) as Record<string, number> };
+    return {
+      kind: 'send' as const,
+      notif,
+      devices,
+      appInfo,
+      sound,
+      badges: Object.fromEntries(badges) as Record<string, number>,
+      cantAct
+    };
+  }
+});
+
+/**
+ * What `expoPush.deliverLiveUpdate` needs to send a Live Activity step to the
+ * source app's Android devices, which show it as an ongoing notification:
+ * the step, who it's from, and the Android devices among its recipients.
+ */
+export const liveUpdateContext = internalQuery({
+  args: { notificationId: v.id('notifications') },
+  handler: async (ctx, args) => {
+    const notif = await ctx.db.get(args.notificationId);
+    if (!notif?.liveActivity) return null;
+    const app = await ctx.db.get(notif.sourceAppId);
+    if (!app) return null;
+    const esc = notif.escalation;
+    const devices = (await devicesForApp(ctx, app, esc ? esc.order.slice(0, esc.level + 1) : undefined)).filter(
+      (d) => d.platform === 'android'
+    );
+    if (devices.length === 0) return null;
+    const logoUrl = app.logoStorageId ? await ctx.storage.getUrl(app.logoStorageId) : null;
+    return {
+      liveActivity: notif.liveActivity,
+      sourceAppId: app._id,
+      sourceAppName: app.name,
+      logoUrl,
+      devices
+    };
   }
 });

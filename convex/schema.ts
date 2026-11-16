@@ -30,6 +30,12 @@ export default defineSchema({
     sourceAppId: v.id('sourceApps'),
     userId: v.string(), // BA user subject of the member
     role: v.union(v.literal('editor'), v.literal('viewer')),
+    // False for a viewer the owner has stopped from tapping a push's buttons
+    // and replies; viewers can by default. Editors and the owner always can.
+    canAct: v.optional(v.boolean()),
+    // A viewer's Clear: pushes created up to here are gone from their feed
+    // only. Viewers can't delete a shared app's pushes for everyone.
+    clearedBefore: v.optional(v.number()),
     invitedBy: v.string(), // BA subject of the inviter
     // Snapshot of the member's email at accept time, for display on the
     // sharing screen. Source of truth still lives in the BA user table.
@@ -321,6 +327,14 @@ export default defineSchema({
     requestHash: v.string(),
     createdAt: v.number()
   }).index('by_app_key', ['sourceAppId', 'key']),
+
+  /** A shared app's push a viewer deleted from their own feed; everyone else still sees it. */
+  hiddenNotifications: defineTable({
+    userId: v.string(),
+    notificationId: v.id('notifications')
+  })
+    .index('by_user_notification', ['userId', 'notificationId'])
+    .index('by_notification', ['notificationId']),
 
   notifications: defineTable({
     ownerId: v.string(),

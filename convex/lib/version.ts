@@ -11,7 +11,14 @@ export const BACKEND_VERSION = '1.0.0';
  * shipped app checks for. Older servers send no list, and the app reads that
  * as none of these.
  */
-export const FEATURES = ['labels', 'outages'] as const;
+export const FEATURES = [
+  'labels',
+  'outages',
+  'viewerActions',
+  'memberClear',
+  'android-sounds',
+  'android-live-updates',
+] as const;
 
 /**
  * The oldest app this server still works with; older apps get an "Update

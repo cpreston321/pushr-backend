@@ -8,6 +8,7 @@ import {
   requireSourceAppRole,
   canManageSharing,
   deleteInviteLinks,
+  memberCanAct,
   memberSeating,
   MAX_LINKS_PER_INVITE
 } from './lib/sharing';
@@ -76,6 +77,7 @@ export const listMembers = query({
         userId: m.userId,
         email: m.email ?? null,
         role: m.role,
+        canAct: memberCanAct(m),
         acceptedAt: m.acceptedAt,
         isMe: m.userId === userId,
         // Past the owner's plan's seats: kept on the app, but not pushed to.
@@ -486,6 +488,24 @@ export const setMemberRole = mutation({
       throw new ConvexError('Member not found');
     }
     await ctx.db.patch(args.memberId, { role: args.role });
+  }
+});
+
+/** Owner stops a viewer responding to pushes (callbacks and replies), or lets them again. */
+export const setMemberCanAct = mutation({
+  args: {
+    sourceAppId: v.id('sourceApps'),
+    memberId: v.id('sourceAppMembers'),
+    canAct: v.boolean()
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireAuth(ctx);
+    await requireSourceAppRole(ctx, args.sourceAppId, userId, 'owner');
+    const member = await ctx.db.get(args.memberId);
+    if (!member || member.sourceAppId !== args.sourceAppId) {
+      throw new ConvexError('Member not found');
+    }
+    await ctx.db.patch(args.memberId, { canAct: args.canAct });
   }
 });
 

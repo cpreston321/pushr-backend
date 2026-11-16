@@ -1,11 +1,12 @@
 ---
 name: pushr-notify
-description: Send push notifications to the user's iPhone with pushr (POST /notify), from any language, script, server, CI job or cron. Use when the user asks to "notify me when…", "send a push to my phone", "ping me when the build/deploy/job finishes", "alert me if this fails", "add pushr to my app/script", or wants notifications from GitHub Actions, a cron job, a backend or a CLI. Covers setup (URL and token), the request fields, priority, links and images, scheduling, idempotent retries, errors, the TypeScript SDK and the pushrsh CLI.
+description: Send push notifications to the user's phone (iPhone or Android) with pushr (POST /notify), from any language, script, server, CI job or cron. Use when the user asks to "notify me when…", "send a push to my phone", "ping me when the build/deploy/job finishes", "alert me if this fails", "add pushr to my app/script", or wants notifications from GitHub Actions, a cron job, a backend or a CLI. Covers setup (URL and token), the request fields, priority, links and images, scheduling, idempotent retries, errors, the TypeScript SDK and the pushrsh CLI.
 ---
 
 # Send notifications with pushr
 
-pushr turns one HTTP request into a push notification on the user's iPhone.
+pushr turns one HTTP request into a push notification on the user's iPhone or
+Android phone.
 Everything goes through `POST $PUSHR_URL/notify` with a source-app bearer
 token. Full reference: https://pushr.sh/llms-full.txt
 
@@ -61,6 +62,10 @@ Pick by what the user needs to do, not by how important the event feels:
 | `1`–`3` / `"low"` | Passive: lands quietly in Notification Center, no sound, screen stays off | FYIs, digests, "nightly backup done" |
 | `4`–`6` / `"normal"` (default) | A normal banner and sound | Most things: build passed, order received |
 | `7`–`10` / `"high"` | Time-sensitive: breaks through Focus | Needs attention soon: prod down, payment failed |
+
+On Android every priority shows as a heads-up notification with the sound
+the user picked for it; the priority only decides how urgently Google
+delivers it. Quiet hours and silent priorities use a silent channel.
 
 Don't default everything to high: it trains the user to ignore it. During a
 source app's quiet hours, pushes arrive passively unless they need an ack.
@@ -164,7 +169,8 @@ concatenation: titles with quotes or newlines would break the body.
 - For a state that keeps changing (disk usage, a queue, a deploy's stage),
   send every push with the same `replaceKey`, e.g. `"disk-db-1"`. Each one
   replaces the last, so the Lock Screen shows only the current state and the
-  feed keeps the earlier ones as a timeline. Keys are per source app. For
+  feed keeps the earlier ones as a timeline. (On Android the feed collapses
+  them the same way; earlier banners stay in the notification shade.) Keys are per source app. For
   second-by-second progress, use a Live Activity instead.
 - To know when a cron job or worker *stops* running, don't build it from
   `/notify`: use a heartbeat (the `pushr-heartbeats` skill).

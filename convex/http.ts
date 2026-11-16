@@ -5,7 +5,7 @@ import { SELF_HOSTED } from './lib/deployment';
 import { appleSignInEnabled } from './lib/features';
 import { httpAction, type ActionCtx } from './_generated/server';
 import { api, internal } from './_generated/api';
-import { authComponent, createAuth } from './betterAuth/auth';
+import { authComponent, createAuth } from './auth';
 import { sendNotification, type LiveActivityPayload, type SendArgs } from './lib/dispatch';
 import { githubAdapter } from './hooks/github';
 import { sentryAdapter } from './hooks/sentry';

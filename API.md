@@ -255,8 +255,10 @@ X-Pushr-Action: <action.id>
 
 `callbackUrl` must be a public `https://` URL: localhost, private-network
 and link-local addresses are rejected, and redirects are not followed. pushr
-records only the response status, never the body. Viewers on a shared app
-can open links but can't run callbacks or replies.
+records only the response status, never the body. Members of a shared app
+can run callbacks and replies too. The owner can turn that off for a viewer
+(in the app's Sharing, tap the member): they can still open links, and their
+pushes arrive without the other buttons.
 
 Outbound action callbacks are unsigned. To authenticate the request,
 embed a bearer token in the `callbackUrl` itself (e.g.

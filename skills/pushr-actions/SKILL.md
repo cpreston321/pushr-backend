@@ -29,8 +29,8 @@ most one `reply`, a known `kind`. Reply text is capped at 2,000 characters.
 - **Context:** add an `open_url` (logs, diff, order) next to the decision.
 - `reply` and `open_url` stay usable after the decision.
 - Lock Screen banners show generic labels ("Action 1", "Reply") because iOS
-  needs categories registered ahead of time; the pushr feed shows your real
-  labels. Keep labels short and put the meaning in the title/body too.
+  needs categories registered ahead of time (Android shows the same ones);
+  the pushr feed shows your real labels. Keep labels short and put the meaning in the title/body too.
 
 ```json
 {
@@ -77,7 +77,7 @@ Rules that shape the implementation:
 - **Requests are unsigned.** Authenticate with a secret in the URL
   (`?key=…`, compared in constant time) or a path segment you can verify.
 - Make the handler idempotent: key on `notificationId` + `actionId`.
-- Viewers of a shared app can open links but can't trigger callbacks or replies.
+- Members of a shared app can trigger callbacks and replies, unless the owner turned that off for a viewer; links always open.
 
 ## Implementations
 

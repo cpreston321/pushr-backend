@@ -77,7 +77,9 @@ otherwise it's an ordinary push. Reserve it for things that justify waking
 someone through silent: safety, data loss, a production outage. Critical
 alerts ignore quiet hours; a muted app stays silent. iOS rings through mute
 only once Apple has approved pushr's entitlement; until then they arrive as
-time-sensitive.
+time-sensitive. On Android they use pushr's "Critical alerts" channel, which
+sounds as an alarm and rings through Do Not Disturb once the user lets that
+channel override it.
 
 ```json
 { "title": "Freezer above -10°C", "body": "Walk-in #2 · 4°C", "priority": "high", "critical": true, "ack": { "timeoutSec": 120, "maxAttempts": 5 } }

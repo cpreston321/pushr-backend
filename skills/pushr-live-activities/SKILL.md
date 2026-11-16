@@ -1,12 +1,14 @@
 ---
 name: pushr-live-activities
-description: Show live progress on the user's iPhone Lock Screen and Dynamic Island with pushr Live Activities (start / update / end). Use when the user asks to "show build/deploy progress on my lock screen", "track this job live", "Dynamic Island progress", "progress bar for my upload/backup/training/order", or wants a long-running script, CI pipeline, worker or delivery tracker to report progress as it runs.
+description: Show live progress on the user's iPhone Lock Screen and Dynamic Island, or as an ongoing Android notification, with pushr Live Activities (start / update / end). Use when the user asks to "show build/deploy progress on my lock screen", "track this job live", "Dynamic Island progress", "progress bar for my upload/backup/training/order", or wants a long-running script, CI pipeline, worker or delivery tracker to report progress as it runs.
 ---
 
 # Live Activities with pushr
 
 A Live Activity is a progress card on the Lock Screen and in the Dynamic
-Island, driven by `POST /notify` with a `liveActivity` field. Sending basics
+Island, driven by `POST /notify` with a `liveActivity` field. On Android the
+same requests drive an ongoing notification with a progress bar (a Live
+Update on Android 16), so one integration covers both. Sending basics
 are in the `pushr-notify` skill. Full reference: https://pushr.sh/llms-full.txt
 
 ## Lifecycle
@@ -117,8 +119,10 @@ pushrsh la end "$ID" --status Done
 ## When it doesn't show
 
 - The user needs iOS 16.2+ with Live Activities allowed for pushr (Settings → pushr → Live Activities).
+- On Android, pushr's notifications and its "Live updates" channel must be on
+  (Settings → Apps → pushr → Notifications). Android needs no APNs setup.
 - `start` needs the phone to have registered for push-to-start, which the app does on first launch.
 - Self-hosted servers need the `APNS_*` variables set (`APNS_AUTH_KEY`,
   `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`, `APNS_ENVIRONMENT`).
-  Without `APNS_AUTH_KEY` the `liveActivity` field is ignored and a normal
-  push is delivered instead.
+  Without `APNS_AUTH_KEY` iPhones get a normal push instead; Android phones
+  still show the live update.

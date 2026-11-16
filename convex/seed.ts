@@ -2,7 +2,7 @@ import { v } from 'convex/values';
 import { internalMutation, type MutationCtx } from './_generated/server';
 import { components } from './_generated/api';
 import { SELF_HOSTED } from './lib/deployment';
-import { createAuth } from './betterAuth/auth';
+import { createAuth } from './auth';
 
 /**
  * Seed a dev user so you can log in without going through the signup flow.

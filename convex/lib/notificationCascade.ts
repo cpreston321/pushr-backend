@@ -2,7 +2,7 @@ import type { MutationCtx } from '../_generated/server';
 import type { Id } from '../_generated/dataModel';
 
 /**
- * Delete a notification with its per-device delivery rows and action events.
+ * Delete a notification with its per-device delivery rows, action events and members' hides.
  * Direct deletes need this: the daily cleanup cron is the only other code
  * path that knows to chase the children.
  */
@@ -17,5 +17,10 @@ export async function deleteNotificationCascade(ctx: MutationCtx, id: Id<'notifi
     .withIndex('by_notification', (q) => q.eq('notificationId', id))
     .collect();
   for (const e of events) await ctx.db.delete(e._id);
+  const hides = await ctx.db
+    .query('hiddenNotifications')
+    .withIndex('by_notification', (q) => q.eq('notificationId', id))
+    .collect();
+  for (const h of hides) await ctx.db.delete(h._id);
   await ctx.db.delete(id);
 }

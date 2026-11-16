@@ -24,16 +24,21 @@ export async function getSourceAppRole(
   ctx: QueryCtx | MutationCtx,
   sourceAppId: Id<'sourceApps'>,
   userId: string
-): Promise<{ app: Doc<'sourceApps'>; role: SourceAppRole } | null> {
+): Promise<{ app: Doc<'sourceApps'>; role: SourceAppRole; canAct: boolean } | null> {
   const app = await ctx.db.get(sourceAppId);
   if (!app || app.revokedAt) return null;
-  if (app.ownerId === userId) return { app, role: 'owner' };
+  if (app.ownerId === userId) return { app, role: 'owner', canAct: true };
   const member = await ctx.db
     .query('sourceAppMembers')
     .withIndex('by_app_user', (q) => q.eq('sourceAppId', sourceAppId).eq('userId', userId))
     .unique();
   if (!member || !member.acceptedAt) return null;
-  return { app, role: member.role };
+  return { app, role: member.role, canAct: memberCanAct(member) };
+}
+
+/** Whether a member may run a push's callbacks and replies: unless the owner turned it off for a viewer. */
+export function memberCanAct(member: Pick<Doc<'sourceAppMembers'>, 'role' | 'canAct'>): boolean {
+  return member.role === 'editor' || member.canAct !== false;
 }
 
 /**
@@ -47,7 +52,7 @@ export async function requireSourceAppRole(
   sourceAppId: Id<'sourceApps'>,
   userId: string,
   minRole: SourceAppRole
-): Promise<{ app: Doc<'sourceApps'>; role: SourceAppRole }> {
+): Promise<{ app: Doc<'sourceApps'>; role: SourceAppRole; canAct: boolean }> {
   const access = await getSourceAppRole(ctx, sourceAppId, userId);
   if (!access || ROLE_RANK[access.role] < ROLE_RANK[minRole]) {
     throw new ConvexError('Source app not found');
@@ -72,6 +77,14 @@ export async function appLocked(ctx: QueryCtx | MutationCtx, sourceAppId: Id<'so
   return locked;
 }
 
+export type AccessibleApp = {
+  app: Doc<'sourceApps'>;
+  role: SourceAppRole;
+  canAct: boolean;
+  /** A viewer's Clear: pushes created up to here are out of their feed. */
+  clearedBefore?: number;
+};
+
 /**
  * List every (non-revoked) source app the user can see — apps they own plus
  * apps they're an accepted member of. Returns the row + their role.
@@ -83,7 +96,7 @@ export async function appLocked(ctx: QueryCtx | MutationCtx, sourceAppId: Id<'so
 export async function listAccessibleSourceApps(
   ctx: QueryCtx | MutationCtx,
   userId: string
-): Promise<Array<{ app: Doc<'sourceApps'>; role: SourceAppRole }>> {
+): Promise<AccessibleApp[]> {
   const [owned, memberships] = await Promise.all([
     ctx.db
       .query('sourceApps')
@@ -94,15 +107,15 @@ export async function listAccessibleSourceApps(
       .withIndex('by_user', (q) => q.eq('userId', userId))
       .collect()
   ]);
-  const out: Array<{ app: Doc<'sourceApps'>; role: SourceAppRole }> = [];
+  const out: AccessibleApp[] = [];
   for (const app of owned) {
-    if (!app.revokedAt) out.push({ app, role: 'owner' });
+    if (!app.revokedAt) out.push({ app, role: 'owner', canAct: true });
   }
   for (const m of memberships) {
     if (!m.acceptedAt) continue;
     const app = await ctx.db.get(m.sourceAppId);
     if (!app || app.revokedAt) continue;
-    out.push({ app, role: m.role });
+    out.push({ app, role: m.role, canAct: memberCanAct(m), clearedBefore: m.clearedBefore });
   }
   return out;
 }

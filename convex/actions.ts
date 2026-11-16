@@ -77,6 +77,7 @@ export const invoke = action({
       ownerId: string;
       callerId: string;
       role: string;
+      canAct: boolean;
     } = await ctx.runQuery(internal.actions.resolveForInvoke, {
       notificationId: args.notificationId,
       actionIdentifier: args.actionIdentifier
@@ -85,8 +86,8 @@ export const invoke = action({
       return { ok: false };
     }
     const act = resolved.action;
-    if (act.kind !== 'open_url' && resolved.role === 'viewer') {
-      throw new ConvexError('Viewers can open links but not run actions');
+    if (act.kind !== 'open_url' && !resolved.canAct) {
+      throw new ConvexError("The app's owner turned off responding for you");
     }
     if (args.reply !== undefined && args.reply.length > MAX_REPLY_CHARS) {
       throw new ConvexError(`Replies are limited to ${MAX_REPLY_CHARS} characters`);
@@ -244,7 +245,8 @@ export const resolveForInvoke = internalQuery({
       action,
       ownerId: notif.ownerId,
       callerId,
-      role: access.role
+      role: access.role,
+      canAct: access.canAct
     };
   }
 });

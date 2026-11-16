@@ -150,6 +150,13 @@ export const sweepUserData = internalMutation({
     for (const m of memberships) await ctx.db.delete(m._id);
     workDone += memberships.length;
 
+    const hides = await ctx.db
+      .query('hiddenNotifications')
+      .withIndex('by_user_notification', (q) => q.eq('userId', userId))
+      .take(BATCH_SIZE);
+    for (const h of hides) await ctx.db.delete(h._id);
+    workDone += hides.length;
+
     if (email) {
       const invites = await ctx.db
         .query('sourceAppInvites')

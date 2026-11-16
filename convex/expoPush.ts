@@ -4,8 +4,9 @@ import { interruptionLevelFor, type InterruptionLevel } from './lib/interruption
 import { publicAction } from './lib/actionsLayout';
 import { internalAction } from './_generated/server';
 import { internal } from './_generated/api';
-import type { Id } from './_generated/dataModel';
+import type { Doc, Id } from './_generated/dataModel';
 import { categoryForActions, layoutActions, type NotifAction } from './lib/actionsLayout';
+import { ANDROID_DEFAULT_CHANNEL, ANDROID_LIVE_CHANNEL, androidChannelFor } from './lib/androidChannel';
 
 type ExpoMessage = {
   to: string;
@@ -14,10 +15,12 @@ type ExpoMessage = {
   data?: Record<string, unknown>;
   priority?: 'default' | 'normal' | 'high';
   // iOS accepts "default", null, or the filename of a sound bundled in the app
-  // binary (e.g. "chime.caf"). Android sounds are managed via notification
-  // channels and this field is largely ignored.
+  // binary (e.g. "chime.caf"). Android ignores it: there the sound comes from
+  // the notification channel (`channelId`).
   sound?: string | null | { critical: boolean; name: string; volume: number };
   subtitle?: string;
+  // Android: which of the app's notification channels shows the push, and so
+  // its sound and importance (lib/androidChannel.ts). iOS ignores it.
   channelId?: string;
   badge?: number;
   richContent?: { image?: string };
@@ -67,15 +70,20 @@ const RECEIPTS_DELAY_MS = 15 * 60 * 1000;
  * when true, delivery ignores quiet hours and the user's priority-bucket
  * sound mapping, sending as high-priority with default sound. The
  * notification row's `priority` is not mutated.
+ *
+ * `skipAndroid` is set by `apns.dispatch` when the step's Live Update already
+ * went to the Android devices (`deliverLiveUpdate`): the banner it falls back
+ * to is for iOS only, and those Android deliveries still count.
  */
 export const deliver = internalAction({
   args: {
     notificationId: v.id('notifications'),
     forceHighPriority: v.optional(v.boolean()),
     /** Ack escalation round; a new round re-sends to devices already pushed. */
-    round: v.optional(v.number())
+    round: v.optional(v.number()),
+    skipAndroid: v.optional(v.boolean())
   },
-  handler: async (ctx, { notificationId, forceHighPriority, round }) => {
+  handler: async (ctx, { notificationId, forceHighPriority, round, skipAndroid }) => {
     const context = await ctx.runQuery(internal.expoPushHelpers.deliveryContext, { notificationId });
     if (!context) return;
     const { notif } = context;
@@ -98,7 +106,7 @@ export const deliver = internalAction({
       return;
     }
 
-    const { devices, appInfo, badges } = context;
+    const { devices, appInfo, badges, cantAct } = context;
     // The app's owner chose which pushes may ring through mute and Do Not
     // Disturb. iOS also needs the user's permission and Apple's entitlement;
     // without them it delivers as time-sensitive.
@@ -129,16 +137,19 @@ export const deliver = internalAction({
     // The banner itself says it's waiting on you, and which reminder this is.
     // Otherwise a push with actions says how to reach them: iOS only shows
     // them on a press and hold, and a swipe offers just Options and Clear.
-    const subtitle =
+    const ackSubtitle =
       needsAck && notif.ack
         ? notif.ack.attempts > 0
           ? `Reminder ${notif.ack.attempts} of ${notif.ack.maxAttempts} · Needs acknowledging`
           : 'Needs acknowledging'
-        : richActions?.some((a) => a.kind === 'reply')
-          ? 'Hold to reply'
-          : richActions?.length || notif.action
-            ? 'Hold to respond'
-            : undefined;
+        : undefined;
+    const subtitle =
+      ackSubtitle ??
+      (richActions?.some((a) => a.kind === 'reply')
+        ? 'Hold to reply'
+        : richActions?.length || notif.action
+          ? 'Hold to respond'
+          : undefined);
     // Slots carry the ios identifier assignment (act_1/act_2/reply) so the
     // mobile response listener can map back to the user-provided action.
     const actionSlots = richActions
@@ -206,33 +217,47 @@ export const deliver = internalAction({
       escalation: !!forceHighPriority,
       quiet
     });
-    const { body: pushBody, data } = fitForPush(notif.title, subtitle, notif.body, notif.data, pushrData, richImage ?? undefined);
-    const message = (d: (typeof devices)[number]): ExpoMessage => ({
-      to: d.expoPushToken,
-      title: notif.title,
-      subtitle,
-      body: pushBody,
-      data,
-      priority,
-      // A critical alert plays its sound even with the ringer off.
-      sound: critical ? { critical: true, name: typeof sound === 'string' ? sound : 'default', volume: 1 } : sound,
-      channelId: 'default',
-      categoryId,
-      badge: badges[d.ownerId],
-      richContent: richImage ? { image: richImage } : undefined,
-      mutableContent: true,
-      interruptionLevel: critical ? 'critical' : level,
-      // Wake the main app in the background for Live Activity flows so the
-      // ActivityKit observer can emit the per-activity update token even
-      // when the app was terminated at start-push time.
-      _contentAvailable: wakeApp ? true : undefined
-    });
+    const full = fitForPush(notif.title, subtitle, notif.body, notif.data, pushrData, richImage ?? undefined);
+    // A viewer the owner stopped responding would only get an error from the
+    // buttons, so their push has none; links alone stay, since anyone may open those.
+    const viewOnly = richActions?.some((a) => a.kind !== 'open_url')
+      ? {
+          categoryId: needsAck ? ACK_CATEGORY_ID : CATEGORY_ID,
+          subtitle: ackSubtitle,
+          ...fitForPush(notif.title, ackSubtitle, notif.body, notif.data, pushrData, richImage ?? undefined)
+        }
+      : null;
+    const message = (d: (typeof devices)[number]): ExpoMessage => {
+      const shape =
+        viewOnly && cantAct.includes(d.ownerId) ? viewOnly : { categoryId, subtitle, ...full };
+      return {
+        to: d.expoPushToken,
+        title: notif.title,
+        subtitle: shape.subtitle,
+        body: shape.body,
+        data: shape.data,
+        priority,
+        // A critical alert plays its sound even with the ringer off.
+        sound: critical ? { critical: true, name: typeof sound === 'string' ? sound : 'default', volume: 1 } : sound,
+        channelId: androidChannelFor({ sound, critical }),
+        categoryId: shape.categoryId,
+        badge: badges[d.ownerId],
+        richContent: richImage ? { image: richImage } : undefined,
+        mutableContent: true,
+        interruptionLevel: critical ? 'critical' : level,
+        // Wake the main app in the background for Live Activity flows so the
+        // ActivityKit observer can emit the per-activity update token even
+        // when the app was terminated at start-push time.
+        _contentAvailable: wakeApp ? true : undefined
+      };
+    };
 
     // Rows settled by an earlier attempt already count; only pending ones are sent.
     let success = rows.filter((r) => r.status === 'queued' || r.status === 'delivered').length;
     const pending = devices
       .map((device, i) => ({ device, deliveryId: rows[i].id, status: rows[i].status }))
-      .filter((p) => p.status === 'pending');
+      // Android devices that got this step as a Live Update don't also get a banner.
+      .filter((p) => p.status === 'pending' && !(skipAndroid && p.device.platform === 'android'));
     const failures: string[] = [];
 
     // Outcomes are recorded per chunk, so if a later chunk throws and the pool
@@ -330,12 +355,108 @@ export const sendInvite = internalAction({
       },
       priority: 'high',
       sound: 'default',
+      channelId: ANDROID_DEFAULT_CHANNEL,
       categoryId: INVITE_CATEGORY_ID,
       mutableContent: true
     }));
     for (let i = 0; i < messages.length; i += EXPO_CHUNK) {
       await sendToExpo(messages.slice(i, i + EXPO_CHUNK));
     }
+  }
+});
+
+const liveUpdateResult = v.object({
+  attempted: v.number(),
+  success: v.number(),
+  failures: v.array(v.string())
+});
+type LiveUpdateResult = { attempted: number; success: number; failures: string[] };
+type LiveUpdateContext = {
+  liveActivity: NonNullable<Doc<'notifications'>['liveActivity']>;
+  sourceAppId: Id<'sourceApps'>;
+  sourceAppName: string;
+  logoUrl: string | null;
+  devices: Array<{ _id: Id<'devices'>; expoPushToken: string; ownerId: string; platform: Doc<'devices'>['platform'] }>;
+};
+
+/**
+ * Send a Live Activity step (start, update or end) to the source app's
+ * Android devices. Android has no ActivityKit, so the app shows the step as an
+ * ongoing notification with a progress bar (packages/live-activity, channel
+ * `pushr.live`). The push is data-only (no title, body or sound), which FCM
+ * hands to the app's background task instead of showing a banner.
+ *
+ * Called by `apns.dispatch` for every step, whether or not APNs is set up.
+ * Each Android device gets a delivery row like any push, so `deliver`'s banner
+ * fallback (with `skipAndroid`) counts them and doesn't push them again.
+ */
+export const deliverLiveUpdate = internalAction({
+  args: { notificationId: v.id('notifications') },
+  returns: liveUpdateResult,
+  handler: async (ctx, { notificationId }): Promise<LiveUpdateResult> => {
+    const context: LiveUpdateContext | null = await ctx.runQuery(internal.expoPushHelpers.liveUpdateContext, {
+      notificationId
+    });
+    if (!context) return { attempted: 0, success: 0, failures: [] };
+    const { liveActivity: la, devices } = context;
+    const pushrLiveUpdate = {
+      action: la.action,
+      activityId: la.activityId,
+      state: la.state,
+      attributes: la.attributes,
+      staleDate: la.staleDate,
+      dismissAfter: la.dismissAfter,
+      notificationId,
+      sourceAppId: context.sourceAppId,
+      sourceAppName: context.sourceAppName,
+      logoUrl: context.logoUrl ?? undefined
+    };
+    const rows: { id: Id<'deliveries'>; status: string }[] = await ctx.runMutation(internal.deliveries.insertPending, {
+      notificationId,
+      deviceOwners: devices.map((d) => ({ deviceId: d._id, ownerId: d.ownerId }))
+    });
+    let success = rows.filter((r) => r.status === 'queued' || r.status === 'delivered').length;
+    const pending = devices
+      .map((device, i) => ({ device, deliveryId: rows[i].id, status: rows[i].status }))
+      .filter((p) => p.status === 'pending');
+    const failures: string[] = [];
+    for (let i = 0; i < pending.length; i += EXPO_CHUNK) {
+      const chunk = pending.slice(i, i + EXPO_CHUNK);
+      const tickets = await sendToExpo(
+        chunk.map((p) => ({
+          to: p.device.expoPushToken,
+          data: { pushrLiveUpdate },
+          priority: 'high',
+          channelId: ANDROID_LIVE_CHANNEL
+        }))
+      );
+      const invalidDeviceIds: Id<'devices'>[] = [];
+      const outcomes = chunk.map((p, j) => {
+        const ticket = tickets[j];
+        if (ticket?.status === 'ok') {
+          success++;
+          return { deliveryId: p.deliveryId, status: 'queued' as const, expoTicketId: ticket.id };
+        }
+        const message = ticket?.message ?? 'no ticket';
+        failures.push(`${p.device.expoPushToken.slice(0, 20)}…: ${message}`);
+        const invalid = ticket?.details?.error === 'DeviceNotRegistered';
+        if (invalid) invalidDeviceIds.push(p.device._id);
+        return {
+          deliveryId: p.deliveryId,
+          status: invalid ? ('invalid' as const) : ('failed' as const),
+          errorCode: ticket?.details?.error,
+          errorMessage: message
+        };
+      });
+      await ctx.runMutation(internal.deliveries.applyTicketOutcomes, { outcomes });
+      for (const id of invalidDeviceIds) {
+        await ctx.runMutation(internal.devices.markInvalid, { id });
+      }
+    }
+    if (success > 0) {
+      await ctx.scheduler.runAfter(RECEIPTS_DELAY_MS, internal.expoReceipts.checkForNotification, { notificationId });
+    }
+    return { attempted: devices.length, success, failures };
   }
 });
 

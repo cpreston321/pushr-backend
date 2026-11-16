@@ -17,6 +17,7 @@ import { touchLastUsed } from './lib/lastUsed';
 import { HISTORY_MAX, supersedeEarlier } from './lib/replace';
 import { countUnreadEntries } from './lib/unread';
 import { deleteNotificationCascade } from './lib/notificationCascade';
+import { hideFromMember, inMemberFeed } from './lib/hiddenNotifications';
 import type { Doc, Id } from './_generated/dataModel';
 
 /**
@@ -29,9 +30,11 @@ import type { Doc, Id } from './_generated/dataModel';
 async function withSourceApp(
   ctx: QueryCtx,
   rows: Doc<'notifications'>[],
-  apps: Doc<'sourceApps'>[]
+  accessible: Array<{ app: Doc<'sourceApps'>; canAct: boolean }>
 ) {
+  const apps = accessible.map(({ app }) => app);
   const appMap = new Map(apps.map((a) => [a._id, a]));
+  const actable = new Set(accessible.filter((a) => a.canAct).map(({ app }) => app._id));
   const present = new Set(rows.map((r) => r.sourceAppId));
   const logoUrlCache = new Map<string, string | null>();
   for (const app of apps) {
@@ -47,7 +50,9 @@ async function withSourceApp(
       actions: r.actions ? (r.actions as NotifAction[]).map(publicAction) : r.actions,
       sourceAppName: app?.name ?? 'unknown',
       sourceAppLogoUrl: app?.logoStorageId ? (logoUrlCache.get(app.logoStorageId) ?? null) : null,
-      sourceAppLogoColor: app?.logoColor ?? null
+      sourceAppLogoColor: app?.logoColor ?? null,
+      /** Whether the caller may run its callbacks and replies; links are always open. */
+      canAct: actable.has(r.sourceAppId)
     };
   });
 }
@@ -82,23 +87,23 @@ export const listMine = query({
       return { page: [], isDone: true, continueCursor: '' };
     }
 
-    const streams = accessible.map(({ app }) =>
+    const streams = accessible.map((access) =>
       stream(ctx.db, schema)
         .query('notifications')
-        .withIndex('by_sourceApp_created', (q) => q.eq('sourceAppId', app._id))
+        .withIndex('by_sourceApp_created', (q) =>
+          access.clearedBefore === undefined
+            ? q.eq('sourceAppId', access.app._id)
+            : q.eq('sourceAppId', access.app._id).gt('createdAt', access.clearedBefore)
+        )
         .order('desc')
         // Scheduled pushes appear when they're delivered, not when queued.
-        .filterWith(async (n) => !n.pending && !n.replacedBy)
+        .filterWith(async (n) => !n.pending && !n.replacedBy && (await inMemberFeed(ctx, userId, access, n)))
     );
     const result = await mergedStream(streams, ['createdAt']).paginate(args.paginationOpts);
 
     return {
       ...result,
-      page: await withSourceApp(
-        ctx,
-        result.page,
-        accessible.map(({ app }) => app)
-      )
+      page: await withSourceApp(ctx, result.page, accessible)
     };
   }
 });
@@ -145,24 +150,22 @@ export const listRecent = query({
     if (accessible.length === 0) return [];
 
     const perApp = await Promise.all(
-      accessible.map(({ app }) =>
-        ctx.db
+      accessible.map(async (access) => {
+        const rows = await ctx.db
           .query('notifications')
-          .withIndex('by_sourceApp_created', (q) => q.eq('sourceAppId', app._id))
+          .withIndex('by_sourceApp_created', (q) => q.eq('sourceAppId', access.app._id))
           .order('desc')
           .filter((q) => q.and(q.neq(q.field('pending'), true), q.eq(q.field('replacedBy'), undefined)))
-          .take(limit)
-      )
+          .take(limit);
+        const shown = await Promise.all(rows.map((n) => inMemberFeed(ctx, userId, access, n)));
+        return rows.filter((_, i) => shown[i]);
+      })
     );
     const rows = perApp
       .flat()
       .toSorted((a, b) => b.createdAt - a.createdAt)
       .slice(0, limit);
-    return await withSourceApp(
-      ctx,
-      rows,
-      accessible.map(({ app }) => app)
-    );
+    return await withSourceApp(ctx, rows, accessible);
   }
 });
 
@@ -265,10 +268,13 @@ export const deleteOne = mutation({
     const userId = await requireAuth(ctx);
     const row = await ctx.db.get(args.id);
     if (!row) throw new ConvexError('Notification not found');
-    // Only the source-app owner can delete — members would otherwise be
-    // able to wipe a notification from every other member's feed.
-    if (row.ownerId !== userId) {
-      throw new ConvexError('Only the app owner can delete notifications');
+    const access = await getSourceAppRole(ctx, row.sourceAppId, userId);
+    if (!access) throw new ConvexError('Notification not found');
+    // A viewer's delete only takes it out of their own feed; the owner's and
+    // an editor's delete it for everyone.
+    if (access.role === 'viewer') {
+      await hideFromMember(ctx, userId, args.id);
+      return;
     }
     // Its earlier versions are hidden behind it, so they go with it.
     if (row.replaceKey && !row.replacedBy) {
@@ -286,8 +292,9 @@ export const deleteOne = mutation({
 });
 
 /**
- * Clear the feed. Only deletes notifications from apps the caller owns —
- * shared apps stay visible because clearing them would affect other members.
+ * Clear the feed. Deletes notifications from apps the caller owns or edits;
+ * for apps they view it moves their own `clearedBefore` instead, so a viewer
+ * never clears anyone else's feed.
  *
  * Pass `sourceAppId` to clear a single app — the mobile feed sends the app
  * it's filtered to, so Clear wipes exactly what's on screen and nothing else.
@@ -330,7 +337,60 @@ export const clearAll = mutation({
         sourceAppId: args.sourceAppId
       });
     }
-    return deleted;
+    return deleted + (await clearSharedApps(ctx, ownerId, args.sourceAppId));
+  }
+});
+
+/**
+ * Clear the apps shared with the caller: an editor's deletes their pushes, a
+ * viewer's empties only their own feed. Returns 0 only when nothing went.
+ */
+async function clearSharedApps(ctx: MutationCtx, userId: string, sourceAppId?: Id<'sourceApps'>) {
+  const memberships = await ctx.db
+    .query('sourceAppMembers')
+    .withIndex('by_user', (q) => q.eq('userId', userId))
+    .take(500);
+  const now = Date.now();
+  let cleared = 0;
+  for (const m of memberships) {
+    if (!m.acceptedAt || (sourceAppId && m.sourceAppId !== sourceAppId)) continue;
+    if (m.role === 'editor') {
+      const app = await ctx.db.get(m.sourceAppId);
+      if (app && !app.revokedAt) cleared += await clearApp(ctx, m.sourceAppId);
+      continue;
+    }
+    const newer = await ctx.db
+      .query('notifications')
+      .withIndex('by_sourceApp_created', (q) =>
+        m.clearedBefore === undefined
+          ? q.eq('sourceAppId', m.sourceAppId)
+          : q.eq('sourceAppId', m.sourceAppId).gt('createdAt', m.clearedBefore)
+      )
+      .first();
+    if (!newer) continue;
+    await ctx.db.patch(m._id, { clearedBefore: now });
+    cleared++;
+  }
+  return cleared;
+}
+
+/** One batch of an app's pushes, the rest in the background. */
+async function clearApp(ctx: MutationCtx, sourceAppId: Id<'sourceApps'>) {
+  const batch = await ctx.db
+    .query('notifications')
+    .withIndex('by_sourceApp_created', (q) => q.eq('sourceAppId', sourceAppId))
+    .take(CLEAR_BATCH);
+  for (const n of batch) await deleteNotificationCascade(ctx, n._id);
+  if (batch.length === CLEAR_BATCH) {
+    await ctx.scheduler.runAfter(0, internal.notifications.clearAppContinue, { sourceAppId });
+  }
+  return batch.length;
+}
+
+export const clearAppContinue = internalMutation({
+  args: { sourceAppId: v.id('sourceApps') },
+  handler: async (ctx, args) => {
+    await clearApp(ctx, args.sourceAppId);
   }
 });
 
@@ -350,13 +410,14 @@ export const unreadCount = query({
     const userId = await requireAuth(ctx);
     const accessible = await listAccessibleSourceApps(ctx, userId);
     let total = 0;
-    for (const { app } of accessible) {
+    for (const access of accessible) {
       const unread = await ctx.db
         .query('notifications')
-        .withIndex('by_sourceApp_read', (q) => q.eq('sourceAppId', app._id).eq('readAt', undefined))
+        .withIndex('by_sourceApp_read', (q) => q.eq('sourceAppId', access.app._id).eq('readAt', undefined))
         .filter((q) => q.neq(q.field('pending'), true))
         .take(500);
-      total += countUnreadEntries(unread);
+      const shown = await Promise.all(unread.map((n) => inMemberFeed(ctx, userId, access, n)));
+      total += countUnreadEntries(unread.filter((_, i) => shown[i]));
     }
     return total;
   }

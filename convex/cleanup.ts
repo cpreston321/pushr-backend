@@ -1,6 +1,7 @@
 import { v } from 'convex/values';
 import { internalMutation } from './_generated/server';
 import { deleteInviteLinks } from './lib/sharing';
+import { deleteNotificationCascade } from './lib/notificationCascade';
 import { components, internal } from './_generated/api';
 import { isLogoBlob } from './lib/logoBlob';
 
@@ -79,17 +80,7 @@ export const sweepNotifications = internalMutation({
       const anchor = Math.max(n.createdAt, n.deliverAt ?? 0);
       let stale = anchor < alwaysStaleCutoff;
       if (!stale) continue;
-      const deliveries = await ctx.db
-        .query('deliveries')
-        .withIndex('by_notification', (q) => q.eq('notificationId', n._id))
-        .collect();
-      for (const d of deliveries) await ctx.db.delete(d._id);
-      const actionEvents = await ctx.db
-        .query('actionEvents')
-        .withIndex('by_notification', (q) => q.eq('notificationId', n._id))
-        .collect();
-      for (const e of actionEvents) await ctx.db.delete(e._id);
-      await ctx.db.delete(n._id);
+      await deleteNotificationCascade(ctx, n._id);
       deleted++;
     }
     if (allStale && batch.length === BATCH_SIZE) {
